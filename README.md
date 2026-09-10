@@ -33,7 +33,9 @@ the cost of not publishing to the Web Store; dismissing it is harmless.
 
 ## Configure
 
-Click the magnifying-glass toolbar icon, or right-click it → **Options**.
+On first install the extension opens a short setup tab asking which zoom you
+want — no digging through settings. After that, click the magnifying-glass
+toolbar icon, or right-click it → **Options**.
 
 Available levels (exactly what Docs itself offers): `Fit`, `50%`, `75%`, `90%`,
 `100%`, `125%`, `150%`, `200%`. Default is `Fit`.
@@ -106,3 +108,4 @@ Tested 2026-09-10 against a live document in Chrome:
 | Menu left open after selection | Fixed — body `mousedown` dismisses it |
 | Stuck hover pill on the widget | Fixed — `mouseout`/`mouseleave` clears it |
 | Docs persistence check | Reload reset to `100%` — confirms the extension is needed |
+| First-run setup tab | Renders correctly in light and dark; compact popup view unaffected |

@@ -7,19 +7,38 @@
   :root { color-scheme: light dark; }
   body {
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-    margin: 0; padding: 20px; min-width: 280px;
+    margin: 0; padding: 20px; min-width: 260px;
   }
+  /* The first-run tab gets room to breathe; the toolbar popup stays compact. */
+  body.welcome { max-width: 460px; margin: 48px auto; padding: 32px; }
+
+  .mark { display: none; }
+  body.welcome .mark { display: block; width: 56px; height: 56px; margin-bottom: 16px; }
+
   h1 { font-size: 15px; margin: 0 0 4px; }
+  body.welcome h1 { font-size: 22px; margin-bottom: 8px; }
   p.hint { margin: 0 0 16px; opacity: 0.7; font-size: 13px; }
+  body.welcome p.hint { font-size: 14px; margin-bottom: 24px; }
+
   label { display: block; font-weight: 600; margin-bottom: 6px; }
   select { width: 100%; padding: 6px 8px; font-size: 14px; }
+  body.welcome select { padding: 10px; font-size: 15px; }
+
   #status { margin-top: 12px; min-height: 18px; font-size: 13px; color: #1a7f37; }
   @media (prefers-color-scheme: dark) { #status { color: #4ac26b; } }
+
+  .done { display: none; margin-top: 24px; font-size: 13px; opacity: 0.75; }
+  body.welcome .done { display: block; }
+  .done code {
+    background: rgba(127,127,127,0.18); padding: 1px 5px; border-radius: 3px;
+  }
 </style>
 </head>
 <body>
-  <h1>Default zoom for Google Docs</h1>
-  <p class="hint">Applied automatically each time you open a document.</p>
+  <img class="mark" src="icons/icon128.png" alt="">
+
+  <h1 id="heading">Default zoom for Google Docs</h1>
+  <p class="hint" id="hint">Applied automatically each time you open a document.</p>
 
   <label for="zoom">Zoom level</label>
   <select id="zoom">
@@ -34,6 +53,11 @@
   </select>
 
   <div id="status" role="status"></div>
+
+  <p class="done">
+    That's it — this is saved automatically. You can change it any time from the
+    magnifying-glass icon in your Chrome toolbar. Open any Google Doc to try it.
+  </p>
 
   <script src="options.js"></script>
 </body>
