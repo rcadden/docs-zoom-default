@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Docs Zoom Default",
+  "version": "1.0.0",
+  "description": "Automatically sets the zoom level on every Google Doc you open to a default you choose.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://docs.google.com/document/*"],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Docs Zoom Default",
+    "default_popup": "options.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://docs.google.com/document/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
