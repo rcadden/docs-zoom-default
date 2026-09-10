@@ -9,17 +9,21 @@
  *     input.goog-toolbar-combo-button-input   <- current value, e.g. "100%" / "Fit"
  *     .goog-toolbar-combo-button-dropdown     <- opens the menu
  *
- * Three things learned the hard way, each of which the code below defends against:
+ * Four things learned by testing against live documents, each of which the code
+ * below defends against:
  *
  *  1. Closure listens for mousedown/mouseup, not click. Events go out as pairs.
- *  2. Docs pre-renders ~42 .goog-menu elements into every document, all hidden
- *     but one. "The visible menu" is therefore an unreliable handle — we locate
- *     the zoom menu by its contents instead, which works even while it is hidden,
- *     and guarantees we never click an item belonging to some other menu.
- *  3. The toolbar exists in the DOM well before Closure wires it up, and the menu
- *     can open seconds after the trigger. Poking it early makes it land on an
- *     arbitrary entry, so we wait for the editor to be ready, use a generous
- *     timeout, and verify the result rather than assuming the click took.
+ *  2. The zoom menu DOES NOT EXIST until the dropdown is opened for the first
+ *     time. A document loads with ~40 other .goog-menu elements already in the
+ *     DOM, none of them the zoom menu. So we always open first and look after —
+ *     searching for the menu up front finds nothing and silently does nothing.
+ *  3. Because ~40 menus are present, "the visible menu" is a weak handle. We
+ *     match on contents (a visible menu containing every zoom value), which
+ *     guarantees we never click an item belonging to some other menu.
+ *  4. The toolbar exists in the DOM well before Closure wires it up, and the menu
+ *     can take seconds to paint. Poking it early makes it land on an arbitrary
+ *     entry, so we wait for the editor, allow a generous timeout, and verify the
+ *     value actually changed rather than assuming the click took.
  *
  * Setting the input's value directly and pressing Enter does not work — Docs
  * reverts it — so the menu is the only route.
@@ -32,15 +36,27 @@ const MENU_ITEM = '.goog-menuitem';
 const EDITOR = '.kix-appview-editor';
 
 const BOOT_TIMEOUT_MS = 30000; // Docs boots slowly on cold cache / large docs
-const MENU_TIMEOUT_MS = 8000; // The menu can be slow to paint on a busy page
+const MENU_TIMEOUT_MS = 8000; // The menu is built on first open and can be slow
 const SETTLE_MS = 400; // Grace period after the toolbar appears
 const POLL_MS = 200;
 const ATTEMPTS = 3;
+const GUARD_MS = 5000; // Watch for drift after applying, then correct it
 
 /** Every value the Docs zoom menu offers, used to identify the menu itself. */
 const ZOOM_VALUES = ['Fit', '50%', '75%', '90%', '100%', '125%', '150%', '200%'];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Report progress two ways: the console for a human, and an attribute on <html>
+ * so the state can be read from the page context (or by an automation tool)
+ * without access to this isolated world. Cheap, and it turns a silent failure
+ * into a diagnosable one.
+ */
+function report(state, detail) {
+  document.documentElement.setAttribute('data-docs-zoom-default', state);
+  console.log(`[Docs Zoom Default] ${state}`, detail ?? '');
+}
 
 function fire(el, type) {
   el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
@@ -60,14 +76,16 @@ async function waitUntil(fn, timeoutMs) {
 const isVisible = (el) => el.offsetParent !== null;
 
 /**
- * Find the zoom menu by its contents rather than by visibility or class name.
- * Docs keeps every menu in the DOM, so this resolves before the menu is opened.
+ * The currently open zoom menu, identified by content rather than class name.
+ * Only ever returns something once the dropdown has been opened at least once —
+ * Docs does not build this menu until then.
  */
-function findZoomMenu() {
+function openZoomMenu() {
   return (
     [...document.querySelectorAll('.goog-menu')].find((menu) => {
+      if (!isVisible(menu)) return false;
       const labels = [...menu.querySelectorAll(MENU_ITEM)].map((i) => i.textContent.trim());
-      return labels.length === ZOOM_VALUES.length && ZOOM_VALUES.every((v) => labels.includes(v));
+      return ZOOM_VALUES.every((v) => labels.includes(v));
     }) || null
   );
 }
@@ -112,21 +130,28 @@ async function cleanup() {
 /** One open-menu-and-click cycle. Returns true only if the zoom actually changed. */
 async function attempt(target) {
   const combo = document.querySelector(ZOOM_SELECT);
+  if (!combo) return false;
   const trigger = combo.querySelector(DROPDOWN) || combo;
-  const menu = findZoomMenu();
-  if (!menu) return false; // Pageless mode or a reworked menu.
+
+  // Open first. The menu is built on demand, so looking for it before this
+  // point finds nothing — that bug shipped in 1.0.0 and did exactly nothing.
+  fire(trigger, 'mousedown');
+  fire(trigger, 'mouseup');
+
+  const menu = await waitUntil(openZoomMenu, MENU_TIMEOUT_MS);
+  if (!menu) {
+    report('menu-did-not-open');
+    return false;
+  }
 
   const item = [...menu.querySelectorAll(MENU_ITEM)].find(
     (el) => el.textContent.trim() === target
   );
-  if (!item) return false; // Target not offered (e.g. "Fit" in Pageless mode).
-
-  fire(trigger, 'mousedown');
-  fire(trigger, 'mouseup');
-
-  // Wait for *this* menu to actually paint before clicking into it.
-  const opened = await waitUntil(() => isVisible(menu), MENU_TIMEOUT_MS);
-  if (!opened) return false;
+  if (!item) {
+    // "Fit" is absent in Pageless mode, and Docs could rename entries.
+    report('target-not-offered', target);
+    return false;
+  }
 
   fire(item, 'mousedown');
   fire(item, 'mouseup');
@@ -135,29 +160,68 @@ async function attempt(target) {
 }
 
 async function setZoom(target) {
+  report('waiting-for-editor', target);
+
   // Wait for the editor itself, not just the toolbar markup, then let Closure
   // finish attaching before touching anything.
   const ready = await waitUntil(
     () => document.querySelector(EDITOR) && document.querySelector(ZOOM_INPUT) && currentZoom(),
     BOOT_TIMEOUT_MS
   );
-  if (!ready) return;
+  if (!ready) {
+    report('editor-never-ready');
+    return;
+  }
   await sleep(SETTLE_MS);
 
-  for (let i = 0; i < ATTEMPTS; i++) {
-    if (currentZoom() === target) break; // Already there, or a previous try landed.
-    const ok = await attempt(target);
-    await cleanup();
-    if (ok) break;
-    await sleep(400);
+  if (currentZoom() === target) {
+    report('already-set', target);
+    return;
   }
 
-  // Whatever happened above, never leave a menu open or the widget highlighted.
+  for (let i = 1; i <= ATTEMPTS; i++) {
+    const ok = await attempt(target);
+    await cleanup();
+    if (ok) {
+      report('applied', target + ' (attempt ' + i + ')');
+      await guard(target);
+      return;
+    }
+    await sleep(400);
+    if (currentZoom() === target) {
+      report('applied', target + ' (attempt ' + i + ', delayed)');
+      await guard(target);
+      return;
+    }
+  }
+
+  report('gave-up', 'wanted ' + target + ', still ' + currentZoom());
   await cleanup();
 }
 
+/**
+ * Watch briefly after a successful apply and put it back if something moves it.
+ *
+ * Testing turned up a rare race where the zoom ends up on an arbitrary entry
+ * (200%, the last item) despite the click having been verified — it only shows
+ * up when the script fires at a toolbar Closure has not finished wiring up. The
+ * exact mechanism is not pinned down; rather than leave a silent wrong result,
+ * this notices the drift and corrects it. Docs itself never changes the value
+ * after load (sampled for 14s), so any movement here is ours to undo.
+ */
+async function guard(target) {
+  const deadline = Date.now() + GUARD_MS;
+  while (Date.now() < deadline) {
+    await sleep(POLL_MS);
+    if (currentZoom() === target) continue;
+    report('drifted', 'became ' + currentZoom() + ', reapplying ' + target);
+    const ok = await attempt(target);
+    await cleanup();
+    report(ok ? 'reapplied' : 'reapply-failed', target);
+    return;
+  }
+}
+
 chrome.storage.sync.get({ zoom: 'Fit' }, ({ zoom }) => {
-  // Failing silently is deliberate: a broken run leaves the doc at Docs' own
-  // 100% default, which is no worse than not having the extension installed.
-  setZoom(zoom).catch(() => {});
+  setZoom(zoom).catch((err) => report('error', String(err)));
 });

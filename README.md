@@ -58,23 +58,27 @@ worth it — an unlisted Web Store listing is link-only, not searchable.
 
 The zoom control is a Closure combo button. On document load the content script
 waits for the editor, opens the zoom menu, clicks the item matching your setting,
-then cleans up after itself.
+cleans up after itself, then watches briefly to make sure the value sticks.
 
-Three things learned by testing against a live document, each of which the code
-now defends against:
+Four things learned by testing against live documents, each of which the code now
+defends against:
 
 1. **Closure listens for `mousedown`/`mouseup`, not `click`.** Events go out as
    pairs. A plain `click` does nothing at all.
-2. **Docs pre-renders ~42 `.goog-menu` elements into every document**, all hidden
-   but one. "The visible menu" is an unreliable handle, so the zoom menu is
-   located by its *contents* — the one whose items are exactly the eight zoom
-   values. That works even while it is hidden and guarantees we never click an
-   item belonging to some other menu.
-3. **The toolbar exists in the DOM well before Closure wires it up**, and the menu
-   can open seconds after the trigger. An early version fired at a half-ready
-   widget, gave up waiting, and left the document on `200%` with the menu hanging
-   open. The script now waits for the editor itself, allows the menu 8s to paint,
-   verifies the value actually changed, and retries up to 3 times.
+2. **The zoom menu does not exist until the dropdown is opened for the first
+   time.** A document loads with ~40 other `.goog-menu` elements already present,
+   none of them the zoom menu. Version 1.0.0 searched for the menu *before*
+   opening it, found nothing, and silently did nothing — that was the bug that
+   made the first release a no-op. We now always open first and look after.
+3. **Because ~40 menus are present, "the visible menu" is a weak handle.** The
+   zoom menu is matched on its contents — a visible menu containing every zoom
+   value — so we can never click an item belonging to some other menu.
+4. **The toolbar exists in the DOM well before Closure wires it up.** Firing early
+   can leave the zoom on an arbitrary entry (200%, the last item) even though the
+   click verified as successful. The script waits for the editor, verifies the
+   value changed, retries up to 3 times, and then guards the result for 5s,
+   re-applying if it drifts. Docs itself never changes the value after load
+   (sampled for 14s), so any movement in that window is ours to undo.
 
 Cleanup handles two bits of residue, both caused by the events being synthesised:
 the menu can be left standing (`Escape` does **not** dismiss a Closure menu — a
@@ -84,6 +88,18 @@ grey pill around the control that reads as a still-open dropdown.
 
 Setting the input's value directly and pressing Enter does not work — Docs
 reverts it — so the menu is the only route.
+
+## Debugging
+
+The script reports its progress two ways, so a failure is never silent:
+
+- **Console**, prefixed `[Docs Zoom Default]`
+- **An attribute on `<html>`**: `data-docs-zoom-default`, readable from the page
+  context without access to the extension's isolated world
+
+States: `waiting-for-editor`, `editor-never-ready`, `already-set`,
+`menu-did-not-open`, `target-not-offered`, `applied`, `drifted`, `reapplied`,
+`reapply-failed`, `gave-up`, `error`.
 
 ## Known limitations
 
@@ -98,14 +114,14 @@ reverts it — so the menu is the only route.
 
 ## Verification log
 
-Tested 2026-09-10 against a live document in Chrome:
+Tested 2026-09-10 against live documents in Chrome:
 
 | Case | Result |
 |---|---|
-| Cold load → `Fit` | Applied in 1.6s, 1 attempt |
-| Cold load → `150%` | Applied in 3.2s, 1 attempt |
-| Re-run against already-set value | 0 attempts, no menu flicker |
-| Menu left open after selection | Fixed — body `mousedown` dismisses it |
-| Stuck hover pill on the widget | Fixed — `mouseout`/`mouseleave` clears it |
-| Docs persistence check | Reload reset to `100%` — confirms the extension is needed |
-| First-run setup tab | Renders correctly in light and dark; compact popup view unaffected |
+| Zoom menu present on fresh load? | **No** — created lazily on first dropdown open. Root cause of the 1.0.0 no-op |
+| Cold load → `Fit`, open-first | Menu found, applied, menu self-closes |
+| Early fire → drift to 200% | Reproduced, then caught and corrected by the guard |
+| Cleanup as drift suspect | Ruled out — value held at `Fit` across full cleanup |
+| Docs re-applying its own zoom? | Ruled out — sampled 14s after load, no change |
+| Menu left open / stuck hover pill | Fixed — body `mousedown` and `mouseout`/`mouseleave` |
+| First-run setup tab | Renders correctly in light and dark; compact popup unaffected |
