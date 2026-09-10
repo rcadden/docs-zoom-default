@@ -73,14 +73,15 @@ defends against:
 3. **Because ~40 menus are present, "the visible menu" is a weak handle.** The
    zoom menu is matched on its contents — a visible menu containing every zoom
    value — so we can never click an item belonging to some other menu.
-4. **The toolbar exists in the DOM well before Closure wires it up.** Firing early
-   can leave the zoom on an arbitrary entry (200%, the last item) even though the
-   click verified as successful. The script waits for the editor, verifies the
-   value changed, retries up to 3 times, and then guards the result for 5s,
-   re-applying if it drifts. Docs itself never changes the value after load
-   (sampled for 14s), so any movement in that window is ours to undo.
+4. **The toolbar exists in the DOM well before Closure wires it up**, and a cold
+   load has been observed taking **17 seconds** just to render it. A single
+   cleanup pass cannot win that race — the menu can paint *after* cleanup has
+   looked and given up, which is how 1.0.1 left the dropdown hanging open. The
+   script now watches for 12 seconds after applying, closing the menu whenever it
+   reappears and re-applying the zoom if it drifts. It stops the moment you touch
+   anything, so it can never fight you or close a menu you opened.
 
-Cleanup handles two bits of residue, both caused by the events being synthesised:
+Dismissal handles two bits of residue, both caused by the events being synthesised:
 the menu can be left standing (`Escape` does **not** dismiss a Closure menu — a
 `mousedown` on the document body does), and the pointer never "leaves" the
 widget, so Closure keeps `goog-toolbar-combo-button-hover` applied and paints a
@@ -125,3 +126,4 @@ Tested 2026-09-10 against live documents in Chrome:
 | Docs re-applying its own zoom? | Ruled out — sampled 14s after load, no change |
 | Menu left open / stuck hover pill | Fixed — body `mousedown` and `mouseout`/`mouseleave` |
 | First-run setup tab | Renders correctly in light and dark; compact popup unaffected |
+| Cold load timing (slow case) | Toolbar took 17s to render; zoom applied at 21s — hence the 12s watch window |

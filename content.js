@@ -40,7 +40,8 @@ const MENU_TIMEOUT_MS = 8000; // The menu is built on first open and can be slow
 const SETTLE_MS = 400; // Grace period after the toolbar appears
 const POLL_MS = 200;
 const ATTEMPTS = 3;
-const GUARD_MS = 5000; // Watch for drift after applying, then correct it
+const WATCH_MS = 12000; // Keep tidying up after applying; loads can be very slow
+const MAX_REAPPLY = 2;
 
 /** Every value the Docs zoom menu offers, used to identify the menu itself. */
 const ZOOM_VALUES = ['Fit', '50%', '75%', '90%', '100%', '125%', '150%', '200%'];
@@ -96,7 +97,22 @@ const currentZoom = () => {
 };
 
 /**
- * Put the toolbar back the way we found it.
+ * True once the user has actually touched the page, after which we stop
+ * tidying up so we can never close a menu they opened themselves.
+ */
+let userActive = false;
+for (const type of ['pointerdown', 'keydown', 'wheel']) {
+  document.addEventListener(
+    type,
+    (e) => {
+      if (e.isTrusted) userActive = true;
+    },
+    { capture: true, passive: true }
+  );
+}
+
+/**
+ * Close the zoom menu if it is open, and clear the hover pill.
  *
  * Two separate bits of residue, both caused by the events being synthesised:
  *
@@ -107,16 +123,18 @@ const currentZoom = () => {
  *    goog-toolbar-combo-button-hover applied, painting a grey pill around the
  *    zoom control that reads as a still-open dropdown. mouseout/mouseleave
  *    clears it.
+ *
+ * Only ever dismisses the zoom menu, identified by content, so a menu the user
+ * opened is never touched.
  */
-async function cleanup() {
+async function dismiss() {
   const combo = document.querySelector(ZOOM_SELECT);
   if (!combo) return;
 
-  for (let i = 0; i < 3; i++) {
-    if (![...document.querySelectorAll('.goog-menu')].some(isVisible)) break;
+  if (openZoomMenu()) {
     fire(document.body, 'mousedown');
     fire(document.body, 'mouseup');
-    await sleep(200);
+    await sleep(150);
   }
 
   for (const el of [combo.querySelector(DROPDOWN), combo]) {
@@ -181,45 +199,59 @@ async function setZoom(target) {
 
   for (let i = 1; i <= ATTEMPTS; i++) {
     const ok = await attempt(target);
-    await cleanup();
+    await dismiss();
     if (ok) {
       report('applied', target + ' (attempt ' + i + ')');
-      await guard(target);
+      await settle(target);
       return;
     }
     await sleep(400);
     if (currentZoom() === target) {
       report('applied', target + ' (attempt ' + i + ', delayed)');
-      await guard(target);
+      await settle(target);
       return;
     }
   }
 
   report('gave-up', 'wanted ' + target + ', still ' + currentZoom());
-  await cleanup();
+  await settle(target);
 }
 
 /**
- * Watch briefly after a successful apply and put it back if something moves it.
+ * Keep tidying up for a while after applying.
  *
- * Testing turned up a rare race where the zoom ends up on an arbitrary entry
- * (200%, the last item) despite the click having been verified — it only shows
- * up when the script fires at a toolbar Closure has not finished wiring up. The
- * exact mechanism is not pinned down; rather than leave a silent wrong result,
- * this notices the drift and corrects it. Docs itself never changes the value
- * after load (sampled for 14s), so any movement here is ours to undo.
+ * A single pass cannot win the race: Docs builds the zoom menu on demand and a
+ * cold load here took 17 seconds just to render the toolbar, so the menu can
+ * paint *after* a one-shot cleanup has already looked and given up — which is
+ * exactly how 1.0.1 left the dropdown hanging open. This keeps watching, closes
+ * the menu whenever it reappears, and puts the zoom back if it drifts.
+ *
+ * Stops early the moment the user touches anything, so it can never fight them
+ * or close a menu they opened.
  */
-async function guard(target) {
-  const deadline = Date.now() + GUARD_MS;
-  while (Date.now() < deadline) {
+async function settle(target) {
+  const deadline = Date.now() + WATCH_MS;
+  let reapplied = 0;
+
+  while (Date.now() < deadline && !userActive) {
     await sleep(POLL_MS);
-    if (currentZoom() === target) continue;
-    report('drifted', 'became ' + currentZoom() + ', reapplying ' + target);
-    const ok = await attempt(target);
-    await cleanup();
-    report(ok ? 'reapplied' : 'reapply-failed', target);
-    return;
+
+    if (openZoomMenu()) {
+      report('menu-left-open', 'dismissing');
+      await dismiss();
+      continue;
+    }
+
+    if (currentZoom() !== target && reapplied < MAX_REAPPLY) {
+      reapplied++;
+      report('drifted', 'became ' + currentZoom() + ', reapplying ' + target);
+      const ok = await attempt(target);
+      await dismiss();
+      report(ok ? 'reapplied' : 'reapply-failed', target);
+    }
   }
+
+  if (!userActive) await dismiss();
 }
 
 chrome.storage.sync.get({ zoom: 'Fit' }, ({ zoom }) => {
